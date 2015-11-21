@@ -12,11 +12,7 @@
 ssize_t read_wrap(int fd, void * buf, size_t count) {
     struct aiocb io_ctl;
     // man page recommends we 0 out the aiocb buffer
-    // as well as the read buffer up to count. Not sure 
-    // how else to ensure the buffer doesn't contain 
-    // stale data from within this function
     memset(&io_ctl, 0, sizeof(struct aiocb));
-    memset(buf, 0, count);
     // if file is seekable, set offset value
     off_t offset;
     offset = lseek(fd, 0, SEEK_CUR);
@@ -25,6 +21,7 @@ ssize_t read_wrap(int fd, void * buf, size_t count) {
     // to read from stdin or a pipe, which doesn't allow seeking
     if (offset == -1) {
         offset = 0;
+        errno = 0;
     }
     // initialize the fields of the aiocb
     io_ctl.aio_fildes = fd;
@@ -50,12 +47,16 @@ ssize_t read_wrap(int fd, void * buf, size_t count) {
      
     // At this point the read has either completed successfully or
     // has an error to return
-    ret = aio_return(&io_ctl);
-   
+    ret = aio_return(&io_ctl);    
+
     // Update the offset in the file descriptor if the read 
     // terminated successfully
     if (ret >= 0) {
         lseek(fd, ret, SEEK_CUR);
+        // If we reach this point, there was no error from the read
+        // or return, but lseek might have caused an error we don't
+        // care about
+        errno = 0;
     }
     return ret;
 }

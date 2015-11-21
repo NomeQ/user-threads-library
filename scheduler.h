@@ -1,3 +1,4 @@
+#include "queue.h"
 
 typedef unsigned char BYTE;
 
@@ -8,20 +9,43 @@ typedef enum {
     DONE     // The thread has finished.
 } state_t;
 
+struct mutex {
+    int held;
+    struct queue waiting_threads;
+};
+
+struct condition {
+    struct queue waiting_threads;
+};
+
 struct thread {
     BYTE * stack_pointer;
     void (*initial_function)(void*);
     void * initial_argument;
     BYTE * stack_init;
     state_t state;
+    struct mutex thread_lock;
+    struct condition thread_finished;
 };
 
 void scheduler_begin();
 
-void thread_fork(void(*target)(void*), void * arg);
+struct thread * thread_fork(void(*target)(void*), void * arg);
 
 void yield();
 
 void scheduler_end();
+
+void mutex_init(struct mutex *);
+void mutex_lock(struct mutex *);
+void mutex_unlock(struct mutex *);
+
+void condition_init(struct condition *);
+void condition_wait(struct condition *, struct mutex *);
+void condition_signal(struct condition *);
+void condition_broadcast(struct condition *);
+
+void print_readylist();
+void print_freelist();
 
 extern struct thread * current_thread;
