@@ -88,7 +88,7 @@ with 'Join'.
     struct thread * temp = current_thread;
     current_thread = t;
     thread_start(temp, current_thread);
-    return current_thread;  
+    return t;  
 }
 
 // Wait until a given thread has terminated to continue
