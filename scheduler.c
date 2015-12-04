@@ -9,8 +9,9 @@ Scheduler for a user-level threads package.
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include "scheduler.h"
+#include <atomic_ops.h>
 #include "async.h"
+#include "scheduler.h"
 
 #define STACK_SIZE 1024 * 1024
 
@@ -59,6 +60,8 @@ void scheduler_begin() {
     
 }
 
+// Run a kernel thread, continuously yielding (and as such, pulling user level
+// threads off the ready list
 int kernel_thread_begin(void * trash) {
     set_current_thread((struct thread*) malloc(sizeof(struct thread)));
     current_thread->state = RUNNING;
@@ -160,6 +163,33 @@ void scheduler_end() {
 
 // Synchronization
 
+// Spinlock for use with concurrent threading
+void spinlock_lock(AO_TS_t * lock) {
+    while (AO_test_and_set_acquire(lock) == AO_TS_SET) {}
+}
+
+void spinlock_unlock(AO_TS_t * lock) {
+    AO_CLEAR(lock);
+}
+
+#undef malloc
+#undef free
+void * safe_mem(int op, void * arg) {
+    static AO_TS_t spinlock = AO_TS_INITIALIZER;
+    void * result = 0;
+    
+    spinlock_lock(&spinlock);
+    if(op == 0) {
+        result = malloc((size_t)arg);
+    } else {
+      free(arg);
+    }
+    spinlock_unlock(&spinlock);
+    return result; 
+}
+#define malloc(arg) safe_mem(0, ((void*)(arg)))
+#define free(arg) safe_mem(1, arg)
+
 // Mutex
 // Blocking mutex for use with cooperative threading
 void mutex_init(struct mutex * m) {
@@ -189,7 +219,7 @@ void mutex_unlock(struct mutex * m) {
         struct thread * temp = thread_dequeue(&m->waiting_threads);
         temp->state = READY;
         thread_enqueue(&ready_list, temp);
-    } else {
+} else {
         m->held = 0;
     }
 }

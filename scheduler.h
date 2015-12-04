@@ -1,5 +1,9 @@
 #include "queue.h"
 
+extern void * safe_mem(int, void*);
+#define malloc(arg) safe_mem(0, ((void*)(arg)))
+#define free(arg) safe_mem(1, arg)
+
 #define current_thread (get_current_thread())
 
 typedef unsigned char BYTE;
