@@ -1,5 +1,7 @@
 #include "queue.h"
 
+#define current_thread (get_current_thread())
+
 typedef unsigned char BYTE;
 
 typedef enum {
@@ -31,6 +33,7 @@ struct thread {
 void scheduler_begin();
 
 struct thread * thread_fork(void(*target)(void*), void * arg);
+int kernel_thread_begin(void * arg);
 
 void yield();
 
@@ -48,4 +51,5 @@ void condition_broadcast(struct condition *);
 void print_readylist();
 void print_freelist();
 
-extern struct thread * current_thread;
+extern struct thread * get_current_thread();
+extern void set_current_thread(struct thread *);

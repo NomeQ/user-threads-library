@@ -4,7 +4,8 @@ Naomi Dickeron
 
 Scheduler for a user-level threads package. 
 */
-
+#define _GNU_SOURCE
+#include <sched.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +15,6 @@ Scheduler for a user-level threads package.
 #define STACK_SIZE 1024 * 1024
 
 // Global Variables
-struct thread * current_thread;
 struct queue ready_list;
 struct queue free_list;
 
@@ -45,12 +45,27 @@ void thread_wrap() {
 
 // Initializes the ready list, free list, and current thread
 void scheduler_begin() {
-    current_thread = (struct thread*) malloc(sizeof(struct thread));
-    current_thread->state = RUNNING;
+    BYTE * kernel_stack;
+    int flgs, tmp;
+    tmp = 1;
+    flgs = CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FILES | CLONE_FS | CLONE_IO;
+    kernel_stack = malloc(STACK_SIZE) + STACK_SIZE; 
+    printf("About to start kernel thread...");
+    clone(kernel_thread_begin, kernel_stack, flgs, &tmp);
     ready_list.head = NULL; 
     ready_list.tail = NULL;
     free_list.head = NULL;
     free_list.tail = NULL;
+    
+}
+
+int kernel_thread_begin(void * trash) {
+    set_current_thread((struct thread*) malloc(sizeof(struct thread)));
+    current_thread->state = RUNNING;
+    while (1) {
+        yield();
+    }
+    return 0;
 }
 
 // Create a new thread and begin running it
@@ -86,7 +101,7 @@ with 'Join'.
     current_thread->state = READY;
     thread_enqueue(&ready_list, current_thread);
     struct thread * temp = current_thread;
-    current_thread = t;
+    set_current_thread(t);
     thread_start(temp, current_thread);
     return t;  
 }
@@ -124,7 +139,7 @@ void yield() {
             thread_enqueue(&ready_list, current_thread);
     }
     struct thread * temp = current_thread;
-    current_thread = thread_dequeue(&ready_list);
+    set_current_thread(thread_dequeue(&ready_list));
     current_thread->state = RUNNING;
     thread_switch(temp, current_thread);
 }
@@ -149,7 +164,6 @@ void scheduler_end() {
 // Blocking mutex for use with cooperative threading
 void mutex_init(struct mutex * m) {
     // mutex is not held
-    m = (struct mutex *) malloc(sizeof(struct mutex));
     m->held = 0;
     m->waiting_threads.head = NULL;
     m->waiting_threads.tail = NULL;
@@ -182,7 +196,6 @@ void mutex_unlock(struct mutex * m) {
 
 // Blocking Condition variables for cooperative threading
 void condition_init(struct condition * c) {
-    c = (struct condition *) malloc(sizeof(struct condition));
     c->waiting_threads.head = NULL;
     c->waiting_threads.tail = NULL;
 }
