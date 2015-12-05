@@ -55,8 +55,13 @@ void thread_wrap() {
 
 // Exported API functions for scheduler
 
-// Initializes the ready list, free list, and current thread
-void scheduler_begin() {
+// Initializes the ready list, free list, and creates kernel threads
+// If the number of k_threads given is less than 1, error. 
+void scheduler_begin(int k_threads) {
+    if (k_threads < 1) {
+        printf("Error: Need minimum 1 kernel thread");
+        exit(1);
+    }
     // Set this thread to the current thread 
     set_current_thread((struct thread*) malloc(sizeof(struct thread)));
     current_thread->state = RUNNING;
@@ -68,22 +73,27 @@ void scheduler_begin() {
     free_list.tail = NULL;
     ready_list_lock = AO_TS_INITIALIZER;
     
-    // Create a new kernel thread  
+    // Create new kernel threads
     BYTE * kernel_stack;
-    int flgs, tmp;
+    int flgs, tmp, i;
     tmp = 1;
     flgs = CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FILES | CLONE_FS | CLONE_IO;
-    kernel_stack = malloc(STACK_SIZE) + STACK_SIZE; 
-    clone(kernel_thread_begin, kernel_stack, flgs, &tmp);
+    for (i = 1; i < k_threads; i++) {
+        kernel_stack = malloc(STACK_SIZE) + STACK_SIZE; 
+        clone(kernel_thread_begin, kernel_stack, flgs, &tmp);
+    }
 }
 
 // Run a kernel thread, continuously yielding, pulling user level
 // threads off the ready list
 int kernel_thread_begin(void * trash) {
+    int i;
     set_current_thread((struct thread*) malloc(sizeof(struct thread)));
     current_thread->state = RUNNING;
     while (1) {
         yield();
+        // burn a few cycles before calling yield again
+        for (i = 0; i < 10000; i++) {}
     }
     return 0;
 }
@@ -136,10 +146,8 @@ void yield() {
             thread_enqueue(&free_list, current_thread);
             break;
         case BLOCKED :
-            if (is_empty(&ready_list)) {
-                printf("ERROR: thread blocking, no threads to run\n");
-                exit(1);
-            }
+            printf("ERROR: thread blocking in yield, should call block\n");
+            exit(1);
             break;
         default :
             current_thread->state = READY;
@@ -151,6 +159,24 @@ void yield() {
     thread_switch(temp, current_thread);
     spinlock_unlock(&ready_list_lock);
 }
+
+// Similar to yield, but called when blocking and a spinlock is held
+// Note that this routine does not re-acquire the spinlock before returning
+void block(AO_TS_t * spinlock) {
+    // Could be done at a finer granularity, but not currently concerned with that
+    spinlock_lock(&ready_list_lock);
+    spinlock_unlock(spinlock);
+    if (is_empty(&ready_list)) {
+        printf("ERROR: thread blocking, no threads to run\n");
+        exit(1);
+    }
+    struct thread * temp = current_thread;
+    set_current_thread(thread_dequeue(&ready_list));
+    current_thread->state = RUNNING;
+    thread_switch(temp, current_thread);
+    spinlock_unlock(&ready_list_lock);
+}
+
 
 // Wait until all threads finish before freeing memory and
 // allowing the main thread to finish and terminate the program
@@ -197,17 +223,21 @@ void mutex_init(struct mutex * m) {
     m->held = 0;
     m->waiting_threads.head = NULL;
     m->waiting_threads.tail = NULL;
+    m->lock = AO_TS_INITIALIZER;
 }
 
 // If the mutex is already held, place the thread on the 
 // waiting list, block, and yield. Otherwise, set held to true.
 void mutex_lock(struct mutex * m) {
+    spinlock_lock(&m->lock);
     if (m->held == 1) {
         current_thread->state = BLOCKED;
         thread_enqueue(&m->waiting_threads, current_thread);
-        yield();
+        block(&m->lock);
+    } else {
+        m->held = 1;
+        spinlock_unlock(&m->lock);
     }
-    m->held = 1;
 }
 
 // If there is a thread waiting to acquire the mutex, take it
@@ -215,19 +245,24 @@ void mutex_lock(struct mutex * m) {
 // the ready list; do not reset held, so no other threads can get
 // the mutex in the meantime. Otherwise, release the mutex.
 void mutex_unlock(struct mutex * m) {
+    spinlock_lock(&m->lock);
     if (!is_empty(&m->waiting_threads)) {
         struct thread * temp = thread_dequeue(&m->waiting_threads);
         temp->state = READY;
+        spinlock_lock(&ready_list_lock);
         thread_enqueue(&ready_list, temp);
-} else {
+        spinlock_unlock(&ready_list_lock);
+    } else {
         m->held = 0;
     }
+    spinlock_unlock(&m->lock);
 }
 
 // Blocking Condition variables for cooperative threading
 void condition_init(struct condition * c) {
     c->waiting_threads.head = NULL;
     c->waiting_threads.tail = NULL;
+    c->lock = AO_TS_INITIALIZER;
 }
 
 // Release the given mutex, queue up on the condition's waiting list,
@@ -236,58 +271,37 @@ void condition_init(struct condition * c) {
 // the mutex upon reentry
 void condition_wait(struct condition * c, struct mutex * m) {
     mutex_unlock(m);
+    spinlock_lock(&c->lock);
     thread_enqueue(&c->waiting_threads, current_thread);
     current_thread->state = BLOCKED;
-    yield();
+    block(&c->lock);
     mutex_lock(m);
 }  
 
 // If a thread is waiting on this condition, place it back on the 
 // ready list
 void condition_signal(struct condition * c) {
+    spinlock_lock(&c->lock);
     if (!is_empty(&c->waiting_threads)) {
         struct thread * temp = thread_dequeue(&c->waiting_threads);
         temp->state = READY;
+        spinlock_lock(&ready_list_lock);
         thread_enqueue(&ready_list, temp);
+        spinlock_unlock(&ready_list_lock);
     }
+    spinlock_unlock(&c->lock);
 }  
 
 // Place all (if any) waiting threads back on the ready list
 void condition_broadcast(struct condition * c) {
+    spinlock_lock(&c->lock);
     while (!is_empty(&c->waiting_threads)) {
         struct thread * temp = thread_dequeue(&c->waiting_threads);
         temp->state = READY;
+        spinlock_lock(&ready_list_lock);
         thread_enqueue(&ready_list, temp);
+        spinlock_unlock(&ready_list_lock);
     }
+    spinlock_unlock(&c->lock);
 }
 
-// Some print methods for convenient debugging/status outputs
-
-void print_queue(struct queue_node * node) {
-    if (node != NULL) {
-        struct thread * t = node->t;
-        printf("Thread %p : State = %d\n", t, t->state);
-        print_queue(node->next);
-    }
-}
-
-void print_queues(struct queue_node * node) {
-    if (node != NULL) {
-        struct thread * t = node->t;
-        printf("\nThread at address %p has state %d\n", t, t->state);
-        printf("Threads waiting on this thread to terminate:\n");
-        print_queue(t->thread_finished.waiting_threads.head);
-        printf("\n");
-        print_queues(node->next);
-    }
-}
-
-void print_readylist() {
-    printf("\nPrinting ready_list...\n");
-    print_queues(ready_list.head);    
-}
-
-void print_freelist() {
-    printf("\nPrinting free_list...\n");
-    print_queues(free_list.head);
-}

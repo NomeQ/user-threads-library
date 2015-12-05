@@ -1,3 +1,4 @@
+#include <atomic_ops.h>
 #include "queue.h"
 
 extern void * safe_mem(int, void*);
@@ -18,10 +19,12 @@ typedef enum {
 struct mutex {
     int held;
     struct queue waiting_threads;
+    AO_TS_t lock;
 };
 
 struct condition {
     struct queue waiting_threads;
+    AO_TS_t lock;
 };
 
 struct thread {
@@ -40,6 +43,7 @@ struct thread * thread_fork(void(*target)(void*), void * arg);
 int kernel_thread_begin(void * arg);
 
 void yield();
+void block(AO_TS_t * spinlock);
 
 void scheduler_end();
 
@@ -51,9 +55,6 @@ void condition_init(struct condition *);
 void condition_wait(struct condition *, struct mutex *);
 void condition_signal(struct condition *);
 void condition_broadcast(struct condition *);
-
-void print_readylist();
-void print_freelist();
 
 extern struct thread * get_current_thread();
 extern void set_current_thread(struct thread *);
