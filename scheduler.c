@@ -57,16 +57,23 @@ void thread_wrap() {
 
 // Initializes the ready list, free list, and current thread
 void scheduler_begin() {
-    BYTE * kernel_stack;
-    int flgs, tmp;
-    tmp = 1;
-    flgs = CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FILES | CLONE_FS | CLONE_IO;
-    kernel_stack = malloc(STACK_SIZE) + STACK_SIZE; 
+    // Set this thread to the current thread 
+    set_current_thread((struct thread*) malloc(sizeof(struct thread)));
+    current_thread->state = RUNNING;
+
+    // Set up the ready_list and free_list
     ready_list.head = NULL; 
     ready_list.tail = NULL;
     free_list.head = NULL;
     free_list.tail = NULL;
     ready_list_lock = AO_TS_INITIALIZER;
+    
+    // Create a new kernel thread  
+    BYTE * kernel_stack;
+    int flgs, tmp;
+    tmp = 1;
+    flgs = CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FILES | CLONE_FS | CLONE_IO;
+    kernel_stack = malloc(STACK_SIZE) + STACK_SIZE; 
     clone(kernel_thread_begin, kernel_stack, flgs, &tmp);
 }
 
