@@ -7,12 +7,13 @@
  * any changes you make.
  */
 
+#include "queue.h"
+#include <stdlib.h>
+
 extern void * safe_mem(int, void*);
 #define malloc(arg) safe_mem(0, ((void*)(arg)))
 #define free(arg) safe_mem(1, arg)
 
-#include "queue.h"
-#include <stdlib.h>
 
 void thread_enqueue(struct queue * q, struct thread * t) {
 

@@ -2,11 +2,11 @@
 CS 533 Class Project
 Naomi Dickerson
 */
-#include "scheduler.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "scheduler.h"
 
 // Prime function courtesy of Kendall Stewart
 void print_nth_prime(void * pn) {

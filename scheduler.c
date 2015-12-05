@@ -18,11 +18,21 @@ Scheduler for a user-level threads package.
 // Global Variables
 struct queue ready_list;
 struct queue free_list;
+AO_TS_t ready_list_lock;
 
 // Prototype for assembly code to switch between two existing threads
 void thread_switch(struct thread * old, struct thread * new);
 // Prototype for assembly code to switch to a new thread
 void thread_start(struct thread * old, struct thread * new);
+
+// Spinlock for use with concurrent threading
+void spinlock_lock(AO_TS_t * lock) {
+    while (AO_test_and_set_acquire(lock) == AO_TS_SET) {}
+}
+
+void spinlock_unlock(AO_TS_t * lock) {
+    AO_CLEAR(lock);
+}
 
 // Called at the completion of the thread_wrap() wrapper
 // Notify any threads waiting for us to finish from thread_join
@@ -38,6 +48,7 @@ void thread_finish() {
 // calls thread_finish() to prevent popping the stack and getting a 
 // memory error
 void thread_wrap() {
+    spinlock_unlock(&ready_list_lock);
     current_thread->initial_function(current_thread->initial_argument);
     thread_finish();
 }
@@ -51,16 +62,15 @@ void scheduler_begin() {
     tmp = 1;
     flgs = CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FILES | CLONE_FS | CLONE_IO;
     kernel_stack = malloc(STACK_SIZE) + STACK_SIZE; 
-    printf("About to start kernel thread...");
-    clone(kernel_thread_begin, kernel_stack, flgs, &tmp);
     ready_list.head = NULL; 
     ready_list.tail = NULL;
     free_list.head = NULL;
     free_list.tail = NULL;
-    
+    ready_list_lock = AO_TS_INITIALIZER;
+    clone(kernel_thread_begin, kernel_stack, flgs, &tmp);
 }
 
-// Run a kernel thread, continuously yielding (and as such, pulling user level
+// Run a kernel thread, continuously yielding, pulling user level
 // threads off the ready list
 int kernel_thread_begin(void * trash) {
     set_current_thread((struct thread*) malloc(sizeof(struct thread)));
@@ -74,23 +84,6 @@ int kernel_thread_begin(void * trash) {
 // Create a new thread and begin running it
 struct thread * thread_fork(void(*target)(void*), void * arg) {
     struct thread * t;
-
-/* Currently, reclaiming threads from the free list does not work
-with 'Join'.  
-    // If there are any finished threads available, reclaim one
-    if (!is_empty(&free_list)) {
-        //printf("reusing old thread...");
-        t = thread_dequeue(&free_list);
-        // reset its stack pointer to the initial position
-        t->stack_pointer = t->stack_init + STACK_SIZE;
-    // Otherwise, allocate new memory for a new thread
-    } else {
-        t = (struct thread*) malloc(sizeof(struct thread));
-        t->stack_pointer = malloc(STACK_SIZE) + STACK_SIZE;
-        t->stack_init = t->stack_pointer - STACK_SIZE;
-    }
-*/
-    // Initialize all fields of the TCB
     t = (struct thread *) malloc(sizeof(struct thread));
     t->stack_pointer = malloc(STACK_SIZE) + STACK_SIZE;
     t->stack_init = t->stack_pointer - STACK_SIZE;
@@ -101,20 +94,22 @@ with 'Join'.
     condition_init(&t->thread_finished);
 
     // Swap the newly forked thread with the current one
+    // The lock must be locked immediately before this function
+    // and released immediately thread start. This must also
+    // be ensured in YIELD() so the lock is released no matter 
+    // which thread 'returns' from thread_start() 
     current_thread->state = READY;
+    spinlock_lock(&ready_list_lock);
     thread_enqueue(&ready_list, current_thread);
     struct thread * temp = current_thread;
     set_current_thread(t);
     thread_start(temp, current_thread);
+    spinlock_unlock(&ready_list_lock);
     return t;  
 }
 
 // Wait until a given thread has terminated to continue
 void thread_join(struct thread * th) {
-    // Okay, with our current cooperative method of threading, we
-    // don't actually have to worry about a race condition on
-    // thread->state yet, but using a mutex anyway for good condition
-    // variable semantics.
     mutex_lock(&th->thread_lock);
     // Once the status has been changed to DONE, it will stay at 
     // DONE, so no need to recheck the state once we're signaled
@@ -127,6 +122,8 @@ void thread_join(struct thread * th) {
 // Voluntarily yield the CPU. If the thread is DONE, place it
 // on the free_list, if it is blocked, don't enqueue it on any list
 void yield() {
+    // Could be done at a finer granularity, but not currently concerned with that
+    spinlock_lock(&ready_list_lock);
     switch(current_thread->state) {
         case DONE :
             thread_enqueue(&free_list, current_thread);
@@ -145,31 +142,27 @@ void yield() {
     set_current_thread(thread_dequeue(&ready_list));
     current_thread->state = RUNNING;
     thread_switch(temp, current_thread);
+    spinlock_unlock(&ready_list_lock);
 }
 
 // Wait until all threads finish before freeing memory and
 // allowing the main thread to finish and terminate the program
 void scheduler_end() {
+    spinlock_lock(&ready_list_lock);
     while (!is_empty(&ready_list)) {
+        spinlock_unlock(&ready_list_lock);
         yield();
+        spinlock_lock(&ready_list_lock);
     }
+    // Just gonna keep holding onto the lock for this...even though at this point
+    // there should be no threads to run
     while (!is_empty(&free_list)) {
         struct thread * temp = thread_dequeue(&free_list);
         free(temp->stack_init);
         free(temp);
     }
-    free(current_thread);
-}
-
-// Synchronization
-
-// Spinlock for use with concurrent threading
-void spinlock_lock(AO_TS_t * lock) {
-    while (AO_test_and_set_acquire(lock) == AO_TS_SET) {}
-}
-
-void spinlock_unlock(AO_TS_t * lock) {
-    AO_CLEAR(lock);
+    spinlock_unlock(&ready_list_lock);
+    
 }
 
 #undef malloc
